@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# prod overlay：真实集群用的形态。
+#
+# 注意它和 dev 的差异只有下面这几项：namespace、镜像、副本数、
+# 配置值、资源、以及多出来的 PDB。base 一行没改。
+# 这就是 Kustomize 想达到的效果——环境差异是被显式列举的，
+# 而不是散落在两套互相复制的 YAML 里。
+
+namespace: cnlab-prod
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - pdb.yaml
+
+# 生产用不可变 tag。
+# 用 v0.1.0 这样的语义化版本或 git sha，永远不要用 :latest——
+# latest 是不可追溯的，出了问题你无法回答"这个 Pod 到底是哪份代码"。
+images:
+  - name: cnlab
+    newName: ghcr.io/am-okalin/cnlab
+    newTag: v0.1.0
+
+configMapGenerator:
+  - name: cnlab-config
+    behavior: merge
+    literals:
+      - APP_ENV=prod
+      # 生产日志用 info 而不是 debug：debug 在高流量下的量级和成本都很可观。
+      - LOG_LEVEL=info
+      # 生产把 drain 窗口开大一些：流量越大，endpoints 变更在集群内
+      # 传播完成所需的时间越长。
+      - DRAIN_DELAY=10s
+      - SHUTDOWN_TIMEOUT=20s
+      - GREETING=hello
+
+replicas:
+  - name: cnlab
+    count: 3
+
+patches:
+  - path: patch-prod.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: prod

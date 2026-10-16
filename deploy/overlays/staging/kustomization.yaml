@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# staging overlay：上线前的最后一道验证。
+#
+# 这里刻意做成"和 prod 长得几乎一样，只差资源和副本数"，
+# 因为 staging 的价值就在于它是生产的近似复制品。
+# 如果 staging 和 prod 差得太多，它验证过的东西就不能代表生产。
+
+namespace: cnlab-staging
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# ---------------------------------------------------------------------------
+# 这里体现本项目的一条核心分工：内循环 vs 外循环。
+#
+#   dev  overlay -> localhost:5001/cnlab:dev
+#       给本机 kind 用。开发者改完代码 make image-push-local 就有反馈，
+#       全程不碰 git，追求的是"秒级回路"。
+#
+#   staging overlay -> ghcr.io/am-okalin/cnlab:sha-<commit>
+#       给 CI 用。CI 构建多架构镜像推到 GHCR，然后把新 tag 写回这个文件
+#       并提交；ArgoCD 发现 git 变了，自动同步到集群。
+#       全程没有人敲过部署命令，追求的是"可追溯 + 可回滚"。
+#
+# 两个环境用的镜像地址结构完全一样，只是 registry 前缀和 tag 不同——
+# 这正是 Kustomize 的 images 转换器想让你体会的事。
+# tag 由 CI 自动更新，所以这里写的是一个占位值；
+# 首次真实同步前，请先跑一次 CI 让它写入真正的 sha。
+# ---------------------------------------------------------------------------
+images:
+  - name: cnlab
+    newName: ghcr.io/am-okalin/cnlab
+    newTag: sha-placeholder
+
+configMapGenerator:
+  - name: cnlab-config
+    behavior: merge
+    literals:
+      - APP_ENV=staging
+      - LOG_LEVEL=info
+      - DRAIN_DELAY=5s
+      - SHUTDOWN_TIMEOUT=15s
+      - GREETING=hello-from-staging
+
+# 副本数从 1 提到 2：只有多于 1 个副本时，滚动更新、
+# 优雅下线、PDB 这些东西才真正开始起作用。单副本测不出任何并发问题。
+replicas:
+  - name: cnlab
+    count: 2
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: staging

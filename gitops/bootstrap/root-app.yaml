@@ -1,0 +1,46 @@
+# app-of-apps 的根 Application。
+#
+# 它是整个 GitOps 闭环的唯一入口：只有这一个对象需要手动 kubectl apply
+# 一次，之后所有 Application 都由它从 git 里同步出来。
+# 这样"集群里应该跑什么"就完全由 git 决定了，而不是由某个人敲过的命令决定。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnlab-root
+  namespace: argocd
+  finalizers:
+    # 删除这个 Application 时，级联删掉它管的所有子 Application。
+    # 不加这行的话会留下一堆孤儿 Application，是常见的"删不干净"来源。
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/am-okalin/cnlab.git
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      # 递归扫描 gitops/apps/ 下的所有 YAML。
+      # 于是"新增一个环境"= 往这个目录里加一个文件 + git push，
+      # 不需要再碰集群 —— 这就是 GitOps 的杠杆所在。
+      recurse: true
+
+  destination:
+    server: https://kubernetes.default.svc
+    # 子 Application 是 argocd 命名空间里的 CR，所以根应用的目的地就是 argocd。
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # prune：git 里删掉的资源，集群里也删掉。
+      # 这是 GitOps 真正"声明式"的必要条件——否则集群只会做加法。
+      #
+      # ⚠️ 注意这个组合的威力：我们的 overlay 里包含 Namespace 资源，
+      # 而 Namespace 被删除时，里面的所有东西会跟着消失。
+      # 所以永远不要"顺手"把 overlay 里的 namespace.yaml 删掉再 push。
+      prune: true
+      # selfHeal：集群里被人手动改过的地方，会被自动纠回 git 的状态。
+      # 这正是下面"漂移检测"演示所依赖的机制。
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

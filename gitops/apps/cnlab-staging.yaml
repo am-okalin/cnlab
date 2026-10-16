@@ -1,0 +1,36 @@
+# staging 环境：同样自动同步，但镜像 tag 是 :staging。
+#
+# 它和 dev 的差别只体现在 overlay 里，Application 这一层几乎一样。
+# 这个"几乎一样"本身就是重点：环境之间的差异应该收敛到少数几个
+# 显式声明的地方，而不是散落在整套重复的清单里。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnlab-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/am-okalin/cnlab.git
+    targetRevision: main
+    path: deploy/overlays/staging
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnlab-staging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

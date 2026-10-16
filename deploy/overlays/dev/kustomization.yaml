@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# dev overlay：给本机 kind 集群用。
+# 它存在的意义，就是把"本地开发"和"生产"之间所有不同的选择集中列在这里。
+# 想知道 dev 和生产差在哪，看这个文件就够了——不用去 diff 两套清单。
+
+# 这个名字不是装饰：kustomize 会把它写到所有资源的 metadata.namespace 上，
+# 于是三套环境在同一集群里互不干扰（Namespace 是集群级资源，不受影响）。
+namespace: cnlab-dev
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# dev 用可变 tag（:dev），每次推送都覆盖同一个 tag。
+images:
+  - name: cnlab
+    newName: localhost:5001/cnlab
+    newTag: dev
+
+# 只写"和 base 不一样"的键。behavior: merge 让 base 里的其余键原样保留，
+# 于是这个文件本身就回答了"dev 到底改了什么"。
+configMapGenerator:
+  - name: cnlab-config
+    behavior: merge
+    literals:
+      - APP_ENV=dev
+      - LOG_LEVEL=debug
+      - DRAIN_DELAY=3s
+      - SHUTDOWN_TIMEOUT=10s
+      - GREETING=hello-from-dev
+
+replicas:
+  - name: cnlab
+    count: 1
+
+patches:
+  - path: patch-dev.yaml
+
+# 给所有资源打上环境标签，便于 kubectl 按环境筛选、
+# 也便于后面做成本分摊和策略下发。
+labels:
+  - pairs:
+      app.kubernetes.io/environment: dev

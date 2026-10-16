@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnlab
+  labels:
+    app.kubernetes.io/name: cnlab
+    app.kubernetes.io/component: server
+spec:
+  # replicas 由 overlay 决定。base 里放一个"能跑起来的最小值"。
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cnlab
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 —— 滚动更新期间可用副本数不下降，
+      # 配合 readinessProbe 就能做到更新过程零中断。
+      # 如果副本数只有 1，这会短暂导致新 Pod 起不来时更新卡住，
+      # 但"卡住"远好过"中断"。
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cnlab
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: cnlab
+
+      # Pod 级安全上下文：整个 Pod 里的所有容器都拿不到 root。
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: cnlab
+          # 会被 overlay 的 images 转换器覆盖（匹配的是镜像名 cnlab）。
+          # 故意留一个不完整的值，逼着 overlay 必须显式声明用哪个仓库哪个 tag。
+          image: cnlab:dev
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # 应用配置整体来自 ConfigMap（由 kustomize 生成，名字带哈希后缀）。
+          # 环境变量是 12-factor 的配置入口，同一份镜像因此能跑在所有环境。
+          envFrom:
+            - configMapRef:
+                name: cnlab-config
+
+          # ---------------------------------------------------------------
+          # 三种探针，各司其职。它们的区别是本项目最想讲清楚的一件事。
+          # ---------------------------------------------------------------
+
+          # startupProbe：只关心"启动完了没"。
+          # 在它成功之前，liveness/readiness 都不会执行。
+          # 它的存在让"启动慢"和"运行中卡死"这两个问题不再互相干扰——
+          # 没有它，你就只能把 livenessProbe 的 initialDelaySeconds 调得很大，
+          # 而那等于同时放宽了对"运行中卡死"的检测。
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30 # 最多容忍 60s 启动
+
+          # livenessProbe：进程是不是还活着。失败 → kubelet 重启容器。
+          # 它打的是 /healthz，因为那个端点只回答"进程还在吗"，
+          # 刻意不去检查任何下游依赖——否则数据库抖一下，所有 Pod 会被
+          # 连环重启，一次小故障被放大成雪崩。
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # readinessProbe：现在能不能给我导流量。失败 → 从 Service
+          # endpoints 摘除，但不重启。
+          # 它打的是 /readyz，而 /readyz 在收到 SIGTERM 后会主动转为失败——
+          # 这是"优雅下线"能在 K8s 上真正成立的关键一环。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 2
+            successThreshold: 1
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              # 刻意不设 CPU limit：Go 服务在 CPU limit 下会被 cgroup 节流，
+              # 表现为 p99 延迟莫名抖动。设 requests 让调度器知道你要多少，
+              # 但不设 limit 避免被硬性节流。内存必须有 limit，
+              # 因为内存不可压缩，超了会拖垮整个节点。
+              memory: 128Mi
+
+          # 容器级安全上下文：即使镜像被换掉，也几乎没有可用的攻击面。
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+        # -----------------------------------------------------------------
+        # 为什么这里没有 preStop 钩子？
+        # -----------------------------------------------------------------
+        # 常见写法是加一个 `preStop: exec: sleep 5`，靠"延迟退出"来等
+        # endpoints 摘除完成。本项目刻意不这么做，原因有两个：
+        #
+        #   1. 它在容器里浪费 5 秒（distroless 里连 sleep 都没有），
+        #      而且这 5 秒和 terminationGracePeriodSeconds 是双重计时；
+        #   2. 更根本的是，正确的做法应该由应用自己表达——
+        #      收到 SIGTERM 后先让 /readyz 失败、再等一个 drain 窗口。
+        #      这个逻辑已经在 main.go 里，且是分离、可观测、可测试的
+        #      （见 TestGracefulShutdownDrainsInFlight）。
+        #
+        # preStop sleep 是"因为应用不会优雅退出，所以在外面糊一层"的补偿，
+        # 本项目选择了把这件事做进应用里。
+
+      # -----------------------------------------------------------------
+      # 优雅下线的时间预算。这个数字必须和容器里的两个环境变量对得上：
+      #
+      #   terminationGracePeriodSeconds >= DRAIN_DELAY + 最长请求耗时 + 余量
+      #
+      # 本 base 的值：5s(drain) + 请求耗时 + 余量 < 30s ✔
+      # 如果 DRAIN_DELAY 调到 25s 而这里还是 30s，那么 kubelet 会在应用
+      # 还在收尾时直接 SIGKILL —— 现象是"日志里看不到『已优雅退出』那一行"，
+      # 并且偶发 502。
+      # -----------------------------------------------------------------
+      terminationGracePeriodSeconds: 30

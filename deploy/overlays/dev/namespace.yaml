@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnlab-dev
+  labels:
+    app.kubernetes.io/part-of: cnlab
+    # Pod Security Admission 标签：强制这个命名空间里的 Pod 满足
+    # restricted 级别。它是集群层面的兜底——即使清单里漏写了
+    # securityContext，Pod 也起不来，而不是悄悄以 root 运行。
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

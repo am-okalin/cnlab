@@ -1,0 +1,17 @@
+# 构建上下文里不需要的东西。作用有两个：
+#   1. 传输更快（bin/ 里有 60MB 的 kind/kustomize）
+#   2. 缓存不被无关文件的变化打断（docs 改一个错别字不该让镜像层失效）
+.git
+.gitignore
+.github
+bin/
+deploy/
+docs/
+gitops/
+kind/
+hack/
+*.md
+.golangci.yml
+.dockerignore
+Dockerfile
+Makefile

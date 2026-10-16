@@ -1,0 +1,42 @@
+# dev 环境：自动同步。
+#
+# 自动同步只应该给 dev 这类"改错了也没关系"的环境。
+# 生产用自动同步意味着任何一次合并都会直接上线，没有人工确认这一环——
+# 那个决定见 gitops/examples/cnlab-prod.yaml。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnlab-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/am-okalin/cnlab.git
+    targetRevision: main
+    # 关键：ArgoCD 指向的不是"源码"，而是"期望状态"。
+    # CI 只负责构建镜像并把新 tag 写进这里指向的 overlay，
+    # 至于怎么让集群变成那个样子，是 ArgoCD 的事。
+    # 这条分工线就是 push 式部署和 pull 式部署的分水岭。
+    path: deploy/overlays/dev
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnlab-dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # 清单里有 Deployment/Service 的字段较多，遇到 CRD 字段过多时
+      # server-side apply 更可靠；这里也顺带避免注解体积超限。
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

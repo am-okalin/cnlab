@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnlab-prod
+  labels:
+    app.kubernetes.io/part-of: cnlab
+    # 生产环境同样强制 restricted。注意这条不是"多一层保险"而已：
+    # 它是唯一能在清单写错时仍然拦住的机制。
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

@@ -1,0 +1,21 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cnlab
+  labels:
+    app.kubernetes.io/name: cnlab
+    app.kubernetes.io/component: server
+spec:
+  # 「自愿中断」期间至少保留 2 个副本可用。
+  #
+  # PDB 只能约束自愿中断：节点排空（kubectl drain）、集群升级。
+  # 它管不了节点宕机、OOMKilled 这类非自愿中断——所以 PDB 不是可用性保证，
+  # 而是"别让运维操作自己把服务搞挂"的护栏。
+  #
+  # 关键权衡：minAvailable 设得太高会让 kubectl drain 永远卡住
+  # （比如 3 副本设 minAvailable: 3，任何 Pod 都驱逐不了）。
+  # 经验值是 minAvailable = 副本数 - 1。
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cnlab

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnlab
+spec:
+  template:
+    spec:
+      containers:
+        - name: cnlab
+          # dev 用的是可变 tag（:dev），所以必须 Always 拉取。
+          #
+          # 这是本地 kind + 本地仓库最常见的坑：推了新镜像，kubectl 也
+          # rollout restart 了，看到的却还是旧行为。原因是 imagePullPolicy
+          # 默认 IfNotPresent，节点上已经有 cnlab:dev 这个 tag 了，
+          # containerd 就认为不需要再动。
+          #
+          # 生产环境用不可变 tag（如 git sha / 语义化版本）+ IfNotPresent，
+          # 既避免这个坑，又让"运行的是哪份代码"可追溯。
+          imagePullPolicy: Always

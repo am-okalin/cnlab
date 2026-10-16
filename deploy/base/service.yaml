@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cnlab
+  labels:
+    app.kubernetes.io/name: cnlab
+    app.kubernetes.io/component: server
+spec:
+  # ClusterIP 是默认也是正确的选择：集群外访问走 port-forward 或 Ingress，
+  # 不要为了让本地能连就把 Service 改成 NodePort。
+  type: ClusterIP
+  selector:
+    # 这个标签必须和 Deployment 的 Pod 模板标签完全一致。
+    # 不匹配就是那个经典现象：Service 有 Endpoints 为空、请求 curl 到的是
+    # connection refused，而 Pod 明明是 Running。
+    app.kubernetes.io/name: cnlab
+  ports:
+    - name: http
+      port: 80
+      # 用端口名而不是数字，这样容器换端口时这里不用改。
+      targetPort: http
+      protocol: TCP

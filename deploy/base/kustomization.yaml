@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# base 只描述"与环境无关"的部分：有哪些资源、它们长什么样、彼此怎么连。
+#
+# 刻意不放进 base 的三样东西：
+#   - namespace  → 环境相关
+#   - replicas   → 环境相关
+#   - image tag  → 环境相关
+# 一旦把它们写进 base，就等于把某个环境的选择固化成了所有人的默认值。
+# 这是"base/overlay 到底该怎么切"最实用的判断标准：
+# 凡是会让你想说"我们环境不太一样"的东西，都不属于 base。
+resources:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+
+# 这里给出一份能独立跑起来的默认配置，让 base 自身是完整可部署的。
+# overlay 用 behavior: merge 覆盖其中个别键，而不是从零重写一份——
+# 这样"哪些键被改过"在 diff 里一目了然。
+configMapGenerator:
+  - name: cnlab-config
+    literals:
+      - APP_ENV=base
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+      - DRAIN_DELAY=5s
+      - SHUTDOWN_TIMEOUT=15s
+      - GREETING=hello
+
+generatorOptions:
+  # 保持默认（不关掉哈希后缀）。这个哈希是"改配置自动触发滚动更新"的来源：
+  # ConfigMap 内容一变，名字就变，Deployment 里的引用被改写，Pod 模板随之变化，
+  # 于是滚动更新被触发。关掉它，改了配置就得手动 rollout restart。
+  disableNameSuffixHash: false

@@ -1,0 +1,26 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose # HTTP 响应体必须关闭
+    - errorlint # errors.Is/As 用法正确性
+    - gocritic # 常见的写法陷阱
+    - misspell # 拼写
+    - nilerr # 返回 nil 却带着非 nil 错误
+    - unconvert # 多余的类型转换
+    - unparam # 未被使用的参数
+    - noctx # 发请求时没有传 context
+    - prealloc # 可以预分配的 slice
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,0 +1,44 @@
+# kind 集群定义。
+#
+# 用声明式配置文件而不是一串 `kind create cluster --flag`，
+# 是为了让"集群长什么样"成为可 review、可进版本库的代码。这正是 GitOps
+# 的思路：基础设施的形状应该和业务代码一样被管理。
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# 集群名固定为 cnlab。所有脚本、kubectl context（kind-cnlab）都依赖它。
+name: cnlab
+
+nodes:
+  # 单控制面 + 单工作节点。
+  #
+  # 为什么不是常见的 1+2：本机 Docker Desktop 只分配了 4GB 内存，
+  # 控制面自身约 700MB，再叠两个 worker 和后面的 ArgoCD 会直接 OOM。
+  # 要练 podAntiAffinity / topologySpreadConstraints 时，把 worker 复制成两份，
+  # 同时需要把 Docker Desktop 内存调到 8GB 以上（见 docs/踩坑记录）。
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+  - role: worker
+
+# ---------------------------------------------------------------------------
+# 本地镜像仓库接线
+# ---------------------------------------------------------------------------
+# 关键认知：kind 的"节点"本身就是 Docker 容器。节点里的 localhost
+# 不是你的 Mac 的 localhost。所以镜像地址必须显式告诉 containerd 该怎么解析。
+#
+# 下面把镜像名里的 localhost:5001 映射到 kind 网络中的 kind-registry:5000。
+# 这样带来一个很有价值的效果：dev 环境的镜像地址是
+#     localhost:5001/cnlab
+# 而 prod 是
+#     ghcr.io/am-okalin/cnlab
+# 两者结构完全一致，Kustomize overlay 只需要改 registry 前缀和 tag，
+# 不需要为本地环境发明一套特殊的写法。
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+      endpoint = ["http://kind-registry:5000"]

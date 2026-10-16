@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnlab
+spec:
+  template:
+    spec:
+      containers:
+        - name: cnlab
+          resources:
+            requests:
+              # 生产的 requests 决定调度密度，要基于真实观测来定，
+              # 不要凭感觉写。这里的值是示意。
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              # 仍然不设 CPU limit（见 base 里的说明）：
+              # 生产环境被 CPU 节流导致的尾延迟抖动，排查成本极高。
+              memory: 256Mi
+
+      # 让同一服务的副本尽量分散到不同节点。
+      #
+      # 用 preferred 而不是 required 是刻意的：required 在节点数少于副本数时
+      # 会让多余的 Pod 永远 Pending。这个练习环境只有 1 个工作节点，
+      # 用 required 立刻就卡住——而"为了高可用加了反亲和，结果服务起不来"
+      # 是线上真实发生过的故障。
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: cnlab
+
+      # 生产的退出预算必须跟着 DRAIN_DELAY 一起调。
+      # prod 的 DRAIN_DELAY=10s，所以这里给到 45s，留足在途请求的收尾时间。
+      terminationGracePeriodSeconds: 45

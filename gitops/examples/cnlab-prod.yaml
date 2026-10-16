@@ -1,0 +1,50 @@
+# ⚠️ 这是模板，刻意放在 examples/ 而不是 apps/，所以不会被 root-app 自动应用。
+#
+# 原因：本练习环境里它同步不了（镜像在私有 GHCR，且 prod 命名空间
+# 需要一个真实集群的资源规格）。更重要的是，它示范了生产应有的做法——
+# 不自动同步。
+#
+# 想启用它：
+#   kubectl --context kind-cnlab apply -f gitops/examples/cnlab-prod.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnlab-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/am-okalin/cnlab.git
+    targetRevision: main
+    path: deploy/overlays/prod
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnlab-prod
+
+  syncPolicy:
+    # -----------------------------------------------------------------
+    # 这里是和 dev/staging 最重要的区别：没有 automated 段。
+    #
+    # 没有 automated 意味着 ArgoCD 仍然会持续比对 git 与集群状态，
+    # 发现漂移就在 UI 上标成 OutOfSync —— 但它不会动手。
+    # 上线这个动作必须由人（或受控的流水线）显式触发 sync。
+    #
+    # 为什么生产要这样：自动同步 + prune 的组合意味着一次错误的合并
+    # 可以无声地把生产资源删掉。人工确认这个环节不是官僚主义，
+    # 它是在"快"和"可挽回"之间做选择。
+    #
+    # 折中方案（可选）：保留 automated.selfHeal 但关掉 prune，
+    # 这样手动改动会被纠正，但删资源必须由人来做。
+    # -----------------------------------------------------------------
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,17 @@
+# --- 构建产物 ---
+/bin/
+/cnlab
+
+# --- 本地缓存 ---
+# 本机环境（受限沙箱）下，Go 构建缓存、golangci-lint 缓存、buildx 配置
+# 全部落在 .cache/ 里，见 hack/env.sh。这些都不该进版本库。
+/.cache/
+
+# --- 编辑器 / 系统 ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- 本地覆盖 ---
+*.local

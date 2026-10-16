@@ -1,0 +1,238 @@
+name: CI
+
+# ---------------------------------------------------------------------------
+# 这个工作流里没有 "deploy" 这一步，这是刻意的。
+#
+# 在 GitOps 模型下，CI 的职责到"把镜像推进仓库、把新 tag 写回期望状态"就结束了。
+# 真正让集群发生变化的，是集群里的 ArgoCD 发现 git 变了。
+#
+# 这就是 push 式部署和 pull 式部署的分水岭：
+#   push 式：CI 需要 kubeconfig，集群凭证散落在 CI 系统里；
+#   pull 式：CI 只需要能写 git，集群凭证从不离开集群。
+#
+# 所以最后一个 job 叫 gitops —— 它做的是"提交一个新的期望状态"，
+# 而不是"部署"。CD 不是这个文件里的某个 job，CD 是 ArgoCD 本身。
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+
+# 同一个分支只保留最新一次运行：
+# 既省配额，也避免"旧提交的镜像后推上去、覆盖新提交"的竞态。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 默认最小权限；需要额外权限的 job 各自声明。
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository 形如 am-okalin/cnlab，拼出来就是 ghcr.io/am-okalin/cnlab
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. 质量门：格式 / 静态检查 / 测试
+  # -------------------------------------------------------------------------
+  quality:
+    name: 质量门
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # 直接读 go.mod 里的版本，避免 CI 和本地用的 Go 版本漂移。
+          go-version-file: go.mod
+          cache: true
+
+      - name: 检查格式
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请本地执行 make fmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # 用和本地完全相同的 golangci-lint 版本。
+      # 版本不一致会导致"本地过、CI 挂"或反过来，是最消耗耐心的那类问题。
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: 测试（含竞态检测）
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: 覆盖率
+        run: go tool cover -func=coverage.out | tail -1
+
+  # -------------------------------------------------------------------------
+  # 2. 清单校验：清单改坏了必须在这里被拦住
+  # -------------------------------------------------------------------------
+  manifests:
+    name: 校验清单
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装 kustomize（与本地同一版本）
+        run: ./hack/install-tools.sh
+
+      - name: 渲染全部 overlay
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          set -euo pipefail
+          for dir in deploy/overlays/*/; do
+            echo "--- 渲染 $dir"
+            kustomize build "$dir" > "/tmp/$(basename "$dir").yaml"
+          done
+
+      # kustomize build 只保证"能渲染"，不保证"字段合法"。
+      # kubeconform 拿官方 JSON Schema 做离线校验，能在合并前抓出
+      # 拼错的字段名、放错层级的字段、以及引用了不存在的 apiVersion。
+      - name: 校验 Kubernetes schema
+        run: |
+          set -euo pipefail
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+          for f in /tmp/*.yaml; do
+            echo "--- $f"
+            "$(go env GOPATH)/bin/kubeconform" -strict -summary -ignore-missing-schemas "$f"
+          done
+
+  # -------------------------------------------------------------------------
+  # 3. 构建并推送镜像
+  # -------------------------------------------------------------------------
+  image:
+    name: 构建镜像
+    runs-on: ubuntu-latest
+    needs: quality
+    permissions:
+      contents: read
+      packages: write # 推 GHCR 需要
+    outputs:
+      tag: ${{ steps.meta.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # 这里刻意没有 setup-qemu-action。
+      # 因为 Dockerfile 的构建阶段用了 --platform=$BUILDPLATFORM，
+      # 交叉编译由 Go 自己完成（GOARCH），并不需要真的执行目标架构的二进制。
+      # 少装 QEMU，构建快一个数量级。
+      # 如果你的 Dockerfile 变成在构建阶段运行目标架构程序（比如 apt install
+      # arm64 包），就必须把 QEMU 加回来。
+
+      - name: 登录 GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN 是每个工作流自动注入的短期凭证，不需要自己配 secret。
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签与 OCI 元数据
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # main 分支 -> sha-<短 sha>。用不可变的提交号做 tag，
+            # 才能回答"线上这个 Pod 到底是哪份代码"。
+            type=sha,format=short,prefix=sha-
+            # 打 v* tag 时 -> 直接用这个版本号
+            type=ref,event=tag
+            # main 分支额外打一个 latest（方便人类，生产别用它）
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 生成构建时间
+        id: buildmeta
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: 构建并推送（amd64 + arm64）
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          # PR 只构建不推送：PR 来自 fork 时本来也拿不到 packages:write，
+          # 而且"合并才发布"是应有的纪律。
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.buildmeta.outputs.time }}
+          # GitHub Actions 缓存后端，跨运行复用构建层。
+          # 对多架构构建来说这一项能省掉大半时间。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------------------
+  # 4. 更新期望状态（GitOps 的交接点）
+  # -------------------------------------------------------------------------
+  gitops:
+    name: 更新 staging 期望状态
+    runs-on: ubuntu-latest
+    needs: image
+    # 只有合并进 main 才更新期望状态。tag 构建用于发布，
+    # 不走这条自动路径 —— 生产要人工提升。
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write # 需要提交回仓库
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: 安装 kustomize（与本地同一版本）
+        run: ./hack/install-tools.sh
+
+      - name: 把新镜像写进 staging overlay
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+          cd deploy/overlays/staging
+          kustomize edit set image "cnlab=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.image.outputs.tag }}"
+          echo "--- 改动后的 images 段 ---"
+          grep -A4 '^images:' kustomization.yaml
+
+      - name: 提交并推送
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add deploy/overlays/staging/kustomization.yaml
+
+          # 幂等：镜像 tag 没变就什么都不做，避免制造无意义的空提交。
+          if git diff --cached --quiet; then
+            echo "期望状态无变化，跳过提交"
+            exit 0
+          fi
+
+          git commit -m "chore(gitops): staging -> ${{ needs.image.outputs.tag }} [skip ci]"
+          git push origin main
+          echo "已提交。接下来由集群内的 ArgoCD 发现变化并同步。"
