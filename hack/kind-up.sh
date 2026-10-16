@@ -41,11 +41,35 @@ fi
 # ---------------------------------------------------------------------------
 # 2. kind 集群
 # ---------------------------------------------------------------------------
+# 关键：创建集群时必须决定"节点容器要不要用代理"。
+#
+# kind 会把宿主的 HTTP_PROXY/HTTPS_PROXY 原样透传进节点容器。本机的代理是
+# http://127.0.0.1:10801 —— 它只监听 Mac 的 loopback，节点容器里的 127.0.0.1
+# 是节点自己。于是节点拉任何外网镜像都会失败，报：
+#   proxyconnect tcp: dial tcp 127.0.0.1:10801: connect: connection refused
+#
+# 实测节点直连 quay.io / ghcr.io / registry-1.docker.io 全部可达，
+# 所以默认把代理变量摘掉。如果你的网络确实必须经代理出网，就把
+# CNLAB_NODE_PROXY 设成一个【节点可达】的地址，例如
+#   CNLAB_NODE_PROXY=http://host.docker.internal:10801 make kind-up
+#
+# ⚠️ 代理变量是烘进节点容器的，集群建好之后改宿主的 env 没有任何用，
+#    只能删掉集群重建。
+NODE_PROXY="${CNLAB_NODE_PROXY:-}"
+
 if "$KIND" get clusters 2>/dev/null | grep -qx "${CNLAB_CLUSTER}"; then
   log "集群 ${CNLAB_CLUSTER} 已存在，跳过创建"
+elif [[ -n "$NODE_PROXY" ]]; then
+  log "创建 kind 集群 ${CNLAB_CLUSTER}（节点走代理 ${NODE_PROXY}）"
+  env HTTP_PROXY="$NODE_PROXY" HTTPS_PROXY="$NODE_PROXY" \
+    http_proxy="$NODE_PROXY" https_proxy="$NODE_PROXY" \
+    NO_PROXY="$NO_PROXY" no_proxy="$no_proxy" \
+    "$KIND" create cluster --config "${CNLAB_ROOT}/kind/cluster.yaml"
 else
-  log "创建 kind 集群 ${CNLAB_CLUSTER}（首次需 1-2 分钟拉取 node 镜像）"
-  "$KIND" create cluster --config "${CNLAB_ROOT}/kind/cluster.yaml"
+  log "创建 kind 集群 ${CNLAB_CLUSTER}（节点直连，不使用代理）"
+  env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    -u http_proxy -u https_proxy -u all_proxy \
+    "$KIND" create cluster --config "${CNLAB_ROOT}/kind/cluster.yaml"
 fi
 
 # 无论集群是新建还是已存在，都重新导出一次 kubeconfig。
