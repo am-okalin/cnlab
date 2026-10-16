@@ -99,11 +99,13 @@ jobs:
 
       - name: 渲染全部 overlay
         run: |
-          export PATH="$PWD/bin:$PATH"
           set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+          mkdir -p /tmp/manifests
           for dir in deploy/overlays/*/; do
-            echo "--- 渲染 $dir"
-            kustomize build "$dir" > "/tmp/$(basename "$dir").yaml"
+            name="$(basename "$dir")"
+            echo "--- 渲染 $name"
+            kustomize build "$dir" > "/tmp/manifests/${name}.yaml"
           done
 
       # kustomize build 只保证"能渲染"，不保证"字段合法"。
@@ -112,10 +114,20 @@ jobs:
       - name: 校验 Kubernetes schema
         run: |
           set -euo pipefail
-          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
-          for f in /tmp/*.yaml; do
-            echo "--- $f"
-            "$(go env GOPATH)/bin/kubeconform" -strict -summary -ignore-missing-schemas "$f"
+          # 这里刻意用官方预编译二进制，而不是 `go install`：
+          # kubeconform v0.8.0 要求 go >= 1.26，而 actions/setup-go 默认会设
+          # GOTOOLCHAIN=local，禁止自动下载更新的工具链，于是 go install
+          # 直接报 "requires go >= 1.26 (running go 1.25.x)" 而失败。
+          # 用发布二进制还顺带省掉了编译时间。
+          KUBECONFORM_VERSION=v0.8.0
+          curl -sSL --retry 3 --retry-delay 2 -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          /tmp/kubeconform -v
+
+          for f in /tmp/manifests/*.yaml; do
+            echo "--- 校验 $f"
+            /tmp/kubeconform -strict -summary -ignore-missing-schemas "$f"
           done
 
   # -------------------------------------------------------------------------
@@ -129,7 +141,7 @@ jobs:
       contents: read
       packages: write # 推 GHCR 需要
     outputs:
-      tag: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.tag.outputs.value }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
@@ -152,17 +164,31 @@ jobs:
           # GITHUB_TOKEN 是每个工作流自动注入的短期凭证，不需要自己配 secret。
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 显式算出"不可变 tag"，不依赖 metadata-action 的 version 输出。
+      #
+      # 这是一个真实踩到的坑：metadata-action 的 version 输出会按优先级挑一个
+      # tag，而 type=raw,value=latest 的优先级高于 type=sha，于是拿到的是
+      # "latest"。用它去更新期望状态，等于把不可追溯的 latest 写进了 GitOps
+      # 仓库 —— 正好破坏掉"用不可变 tag 才能回答线上跑的是哪份代码"这个前提。
+      # 自己算最直白，也不用去记 action 的优先级规则。
+      - name: 计算不可变 tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 生成镜像标签与 OCI 元数据
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # main 分支 -> sha-<短 sha>。用不可变的提交号做 tag，
-            # 才能回答"线上这个 Pod 到底是哪份代码"。
-            type=sha,format=short,prefix=sha-
-            # 打 v* tag 时 -> 直接用这个版本号
-            type=ref,event=tag
+            # 主 tag：上面算出的不可变值
+            type=raw,value=${{ steps.tag.outputs.value }}
             # main 分支额外打一个 latest（方便人类，生产别用它）
             type=raw,value=latest,enable={{is_default_branch}}
 
@@ -182,7 +208,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.tag.outputs.value }}
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.buildmeta.outputs.time }}
           # GitHub Actions 缓存后端，跨运行复用构建层。

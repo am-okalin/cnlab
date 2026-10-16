@@ -51,23 +51,29 @@ else
 fi
 
 echo
-"$BIN/kind" version
 # golangci-lint 内部会自己通过 PATH 去调用 `go`，于是又会踩到 GOCACHE
 # 被 goenv shim 覆写成只读路径的坑。在 bin/ 里放一个指向真实 SDK 的软链，
 # 把 bin/ 放到 PATH 最前面就能绕开。切换 Go 版本后需重新跑本脚本。
+#
+# 注意：这一步在 CI 里是多余的（GitHub runner 上没有 goenv），所以
+# 找不到时只提示、不失败。下面几处都刻意用 if 而不是 `A && B` 的写法，
+# 因为 `[[ ... ]] && cmd` 单独成句时，条件为假会让整个语句非零，
+# 在 set -e 下可能中断脚本。
 echo "==> linking real go into bin/ (绕过 goenv shim 的 GOCACHE 覆写)"
-sdk_root="$(go env GOROOT 2>/dev/null || true)"
-if [[ -x "${sdk_root}/bin/go" ]]; then
+sdk_root=""
+if sdk_root="$(go env GOROOT 2>/dev/null)"; then :; else sdk_root=""; fi
+
+if [[ -n "$sdk_root" && -x "${sdk_root}/bin/go" ]]; then
   ln -sf "${sdk_root}/bin/go" "$BIN/go"
   echo "    $BIN/go -> ${sdk_root}/bin/go"
 else
-  echo "    警告：没能定位真实 go（GOROOT=${sdk_root}），跳过" >&2
+  echo "    未找到真实 go（GOROOT=${sdk_root:-空}），跳过 —— 普通环境不需要这个软链"
 fi
 
 # golangci-lint 自己也是一个 goenv shim：goenv exec 会给它注入那个只读的
 # GOCACHE，它再传给内部的 go，于是照样失败。同样软链真实二进制绕开。
 lint_real="${sdk_root}/bin/golangci-lint"
-if [[ -x "$lint_real" ]]; then
+if [[ -n "$sdk_root" && -x "$lint_real" ]]; then
   ln -sf "$lint_real" "$BIN/golangci-lint"
   echo "    $BIN/golangci-lint -> $lint_real"
 else
@@ -77,7 +83,11 @@ fi
 echo
 "$BIN/kind" version
 "$BIN/kustomize" version
-"$BIN/go" version
-[[ -x "$BIN/golangci-lint" ]] && "$BIN/golangci-lint" --version
+if [[ -x "$BIN/go" ]]; then
+  "$BIN/go" version
+fi
+if [[ -x "$BIN/golangci-lint" ]]; then
+  "$BIN/golangci-lint" --version
+fi
 echo
 echo "工具已就绪: $BIN"

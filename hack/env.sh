@@ -48,6 +48,12 @@ export BUILDX_CONFIG="${CNLAB_CACHE}/buildx"
 #    想清干净直接删 .cache/ 就行。
 export KUBECONFIG="${CNLAB_KUBECONFIG:-${CNLAB_CACHE}/kubeconfig}"
 
+# 4.5) gh CLI 的缓存目录
+#      同属"写不进 $HOME"这一类问题：gh 会去建 ~/.cache/gh，
+#      在受限沙箱下同样报 operation not permitted。
+#      gh 遵循 XDG_CACHE_HOME，指到工作区内即可。
+export XDG_CACHE_HOME="${CNLAB_XDG_CACHE_HOME:-${CNLAB_CACHE}/xdg}"
+
 # 5) 代理：把本地镜像仓库排除在外
 #    宿主设了 http_proxy=http://127.0.0.1:10801，而 kind 会把这些代理变量
 #    透传进节点容器。问题在于：节点容器里的 127.0.0.1 是它自己，不是你的 Mac。
