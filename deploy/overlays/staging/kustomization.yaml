@@ -10,8 +10,8 @@ kind: Kustomization
 namespace: cnlab-staging
 
 resources:
-  - namespace.yaml
-  - ../../base
+- namespace.yaml
+- ../../base
 
 # ---------------------------------------------------------------------------
 # 这里体现本项目的一条核心分工：内循环 vs 外循环。
@@ -31,26 +31,26 @@ resources:
 # 首次真实同步前，请先跑一次 CI 让它写入真正的 sha。
 # ---------------------------------------------------------------------------
 images:
-  - name: cnlab
-    newName: ghcr.io/am-okalin/cnlab
-    newTag: sha-placeholder
+- name: cnlab
+  newName: ghcr.io/am-okalin/cnlab
+  newTag: latest
 
 configMapGenerator:
-  - name: cnlab-config
-    behavior: merge
-    literals:
-      - APP_ENV=staging
-      - LOG_LEVEL=info
-      - DRAIN_DELAY=5s
-      - SHUTDOWN_TIMEOUT=15s
-      - GREETING=hello-from-staging
+- behavior: merge
+  literals:
+  - APP_ENV=staging
+  - LOG_LEVEL=info
+  - DRAIN_DELAY=5s
+  - SHUTDOWN_TIMEOUT=15s
+  - GREETING=hello-from-staging
+  name: cnlab-config
 
 # 副本数从 1 提到 2：只有多于 1 个副本时，滚动更新、
 # 优雅下线、PDB 这些东西才真正开始起作用。单副本测不出任何并发问题。
 replicas:
-  - name: cnlab
-    count: 2
+- count: 2
+  name: cnlab
 
 labels:
-  - pairs:
-      app.kubernetes.io/environment: staging
+- pairs:
+    app.kubernetes.io/environment: staging
