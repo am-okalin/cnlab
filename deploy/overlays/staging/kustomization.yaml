@@ -34,7 +34,7 @@ resources:
 images:
 - name: cnlab
   newName: ghcr.io/am-okalin/cnlab
-  newTag: sha-f24b9a4
+  newTag: sha-071ec28
 
 configMapGenerator:
 - behavior: merge
