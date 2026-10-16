@@ -57,7 +57,10 @@ jobs:
 
       - name: 检查格式
         run: |
-          unformatted=$(gofmt -l .)
+          # 只检查 git 跟踪的 .go 文件，而不是 `gofmt -l .`。
+          # 一方面与本地 make fmt-check 保持一致，另一方面 gofmt 会无差别
+          # 递归目录树，一旦工作区里有 vendor / 缓存目录就会刷出大量误报。
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
           if [ -n "$unformatted" ]; then
             echo "以下文件未格式化，请本地执行 make fmt："
             echo "$unformatted"
@@ -81,7 +84,8 @@ jobs:
         run: go tool cover -func=coverage.out | tail -1
 
   # -------------------------------------------------------------------------
-  # 2. 清单校验：清单改坏了必须在这里被拦住
+  # 2. 清单校验：清单改坏了必须在这里被拦住，而且是真的拦得住
+  #    （image job 依赖本 job，见下面的说明）
   # -------------------------------------------------------------------------
   manifests:
     name: 校验清单
@@ -136,7 +140,17 @@ jobs:
   image:
     name: 构建镜像
     runs-on: ubuntu-latest
-    needs: quality
+    # 这里必须同时依赖 manifests。
+    #
+    # 这是一个真实踩到的结构性疏漏：最初只写了 needs: quality，于是清单
+    # 校验失败既拦不住镜像构建，也拦不住 GitOps 提交。第一次运行的日志就是
+    # 铁证 ——「校验清单」05:30:15 失败，「构建镜像」05:31:54 成功，
+    # 「更新期望状态」05:32:09 成功，并把错误的 latest 写进了仓库。
+    # 一个不会阻断下游的检查，不能叫质量门。
+    #
+    # 代价很小：quality 和 manifests 之间没有依赖，仍然并行执行，
+    # 只是两者都通过之后才轮到 image。
+    needs: [quality, manifests]
     permissions:
       contents: read
       packages: write # 推 GHCR 需要

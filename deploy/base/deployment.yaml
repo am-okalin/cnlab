@@ -6,7 +6,9 @@ metadata:
     app.kubernetes.io/name: cnlab
     app.kubernetes.io/component: server
 spec:
-  # replicas 由 overlay 决定。base 里放一个"能跑起来的最小值"。
+  # 这个 1 不是"默认副本数"，而是让 base 自身可以独立部署的最小值。
+  # 三个 overlay 都会显式覆盖它——环境相关的取值不该由 base 替你决定。
+  # 完整原则见 base/kustomization.yaml 的说明。
   replicas: 1
   selector:
     matchLabels:
@@ -64,12 +66,24 @@ spec:
           # 它的存在让"启动慢"和"运行中卡死"这两个问题不再互相干扰——
           # 没有它，你就只能把 livenessProbe 的 initialDelaySeconds 调得很大，
           # 而那等于同时放宽了对"运行中卡死"的检测。
+          #
+          # ⚠️ 它必须打 /readyz，不能打 /healthz。
+          #
+          # /healthz 从进程开始监听的第一刻就返回 200，拿它做 startupProbe
+          # 等于把整个 failureThreshold 白白浪费掉——启动期根本没有被"看住"，
+          # 探针第一次探测就通过，后面 29 次预算永远不会被用到。
+          #
+          # 本项目实测（READY_DELAY=45s，且 liveness 也打 /readyz）：
+          #   无 startupProbe   → 每 ~30s 被杀一次，RESTARTS 涨到 3 且永远到不了 Ready
+          #   有 startupProbe   → RESTARTS 恒为 0，预热完成后正常就绪
+          # 差值就是这么来的：startupProbe 期间 liveness 被挂起，
+          # 启动期因此拿到了自己独立的预算。
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             periodSeconds: 2
-            failureThreshold: 30 # 最多容忍 60s 启动
+            failureThreshold: 30 # 2s × 30 = 60s 启动预算
 
           # livenessProbe：进程是不是还活着。失败 → kubelet 重启容器。
           # 它打的是 /healthz，因为那个端点只回答"进程还在吗"，

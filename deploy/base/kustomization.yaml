@@ -3,13 +3,13 @@ kind: Kustomization
 
 # base 只描述"与环境无关"的部分：有哪些资源、它们长什么样、彼此怎么连。
 #
-# 刻意不放进 base 的三样东西：
-#   - namespace  → 环境相关
-#   - replicas   → 环境相关
-#   - image tag  → 环境相关
-# 一旦把它们写进 base，就等于把某个环境的选择固化成了所有人的默认值。
-# 这是"base/overlay 到底该怎么切"最实用的判断标准：
-# 凡是会让你想说"我们环境不太一样"的东西，都不属于 base。
+# 刻意不作为"环境默认值"固化在 base 里的三样：
+#   - namespace  → base 完全不写，三个 overlay 各自声明
+#   - replicas   → 三个 overlay 都显式声明；base 里那个 1 只是让它自己
+#                  能独立部署的最小值，不代表任何环境的选择
+#   - image tag  → base 只给镜像名 cnlab，tag 必须由 overlay 的 images 转换器决定
+#
+# 判断标准：凡是会让你想说"我们环境不太一样"的东西，都不该由 base 替你决定。
 resources:
   - serviceaccount.yaml
   - deployment.yaml

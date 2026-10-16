@@ -507,8 +507,12 @@ func run(ctx context.Context, c config, logger *slog.Logger, ln net.Listener) er
 	}
 
 	// 就绪是有意做晚的：容器起来、监听器开始 accept 之后才置 1。
-	// READY_DELAY 用来演示 startupProbe —— 把它调到 20s，
-	// 你会看到没有 startupProbe 时容器被 livenessProbe 反复杀掉。
+	//
+	// READY_DELAY 是给动手练习准备的旋钮，用来制造"慢启动"。
+	// 注意它影响的是 /readyz 而不是 /healthz，所以单独调大它只会让 Pod 停在
+	// 0/1（不被导流量），并**不会**导致重启。想看到"慢启动被 liveness 反复
+	// 杀掉"，必须让 liveness 也依赖 /readyz —— 而那正是本项目警告的误用。
+	// 完整的对照实验见 docs/07-动手练习.md 的 1.1。
 	go func() {
 		if c.ReadyDelay > 0 {
 			logger.Info("等待预热完成", "ready_delay", c.ReadyDelay.String())

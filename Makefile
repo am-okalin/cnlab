@@ -49,13 +49,29 @@ tools: ## 下载 kind / kustomize 到 bin/（不依赖 brew）
 # ---------------------------------------------------------------------------
 # 本地开发
 # ---------------------------------------------------------------------------
+# 注意：这里刻意不写 `gofmt -l .`，而是只检查 git 跟踪的 .go 文件。
+#
+# 原因是本机的 Go 缓存被放在项目内的 .cache/ 下（见 hack/env.sh），
+# 而 gofmt 会无差别递归整个目录树 —— 于是 .cache/gomodcache 里成千上万个
+# 第三方库和 Go 工具链自身的源文件都会被当成待检查对象。后果有两个：
+# 既慢得离谱，又会刷出一屏"未格式化"的误报（工具链的测试数据本来就是
+# 故意不合法的 Go 源码）。
+#
+# go 工具链自己会忽略以 . 开头的目录，所以 `go vet ./...` / `go test ./...`
+# 不受影响；受影响的只有 gofmt 这种自己遍历文件系统的工具。
+GOSOURCES := $(shell git ls-files '*.go')
+
 .PHONY: fmt
 fmt: ## 格式化代码
-	@$(RUN) gofmt -w .
+	@$(RUN) gofmt -w $(GOSOURCES)
 
 .PHONY: fmt-check
 fmt-check: ## 检查格式（CI 用，不修改文件）
-	@$(RUN) test -z "$$(gofmt -l .)" || { echo "以下文件未格式化："; gofmt -l .; exit 1; }
+	@$(RUN) unformatted="$$(gofmt -l $(GOSOURCES))"; \
+	  if [ -n "$$unformatted" ]; then \
+	    echo "以下文件未格式化，请执行 make fmt："; echo "$$unformatted"; exit 1; \
+	  fi; \
+	  echo "格式检查通过"
 
 .PHONY: vet
 vet: ## go vet
@@ -140,12 +156,21 @@ undeploy-dev: ## 删除 dev 环境
 	@$(RUN) kustomize build deploy/overlays/dev | kubectl --context $(CLUSTER_CTX) delete -f - --ignore-not-found
 
 .PHONY: validate
-validate: ## 用集群做服务端 dry-run 校验全部 overlay
-	@for o in dev staging prod; do \
-	  echo "--- $$o ---"; \
-	  source $(CURDIR)/hack/env.sh && kustomize build deploy/overlays/$$o \
-	    | kubectl --context $(CLUSTER_CTX) apply --dry-run=server -f - >/dev/null \
-	    && echo "  OK"; \
+validate: ## 用集群校验全部 overlay：命名空间已存在的走服务端 dry-run（含准入），否则明确降级
+	@source $(CURDIR)/hack/env.sh; \
+	set -e; \
+	for dir in deploy/overlays/*/; do \
+	  name="$$(basename "$$dir")"; \
+	  printf -- "--- %-10s " "$$name"; \
+	  if kustomize build "$$dir" | kubectl --context $(CLUSTER_CTX) apply --dry-run=server -f - >/dev/null 2>&1; then \
+	    echo "OK  (server-side：含 Pod Security Admission 等准入校验)"; \
+	  elif kustomize build "$$dir" | kubectl --context $(CLUSTER_CTX) apply --dry-run=client -f - >/dev/null 2>&1; then \
+	    echo "OK  (client-side：目标命名空间尚未创建，跳过准入校验)"; \
+	  else \
+	    echo "FAILED"; \
+	    kustomize build "$$dir" | kubectl --context $(CLUSTER_CTX) apply --dry-run=client -f - 2>&1 | sed 's/^/      /'; \
+	    exit 1; \
+	  fi; \
 	done
 
 # ---------------------------------------------------------------------------
@@ -170,6 +195,11 @@ smoke: ## 通过 Service 打通一次请求（port-forward + curl）
 	  echo "--- /api/v1/version ---"; curl -s http://127.0.0.1:8080/api/v1/version; echo; \
 	  echo "--- /api/v1/greet ---";   curl -s "http://127.0.0.1:8080/api/v1/greet?name=cnlab"; echo; \
 	  kill $$PF_PID 2>/dev/null || true
+
+.PHONY: rollout-restart
+rollout-restart: ## 重启 dev 的 Pod。推了新镜像之后必须做这一步，原因见 README 的内循环说明
+	@kubectl --context $(CLUSTER_CTX) -n cnlab-dev rollout restart deploy/cnlab
+	@kubectl --context $(CLUSTER_CTX) -n cnlab-dev rollout status deploy/cnlab --timeout=180s
 
 .PHONY: zero-downtime
 zero-downtime: ## 验证滚动更新期间零中断（含 PSA 拒绝不安全 Pod 的演示）

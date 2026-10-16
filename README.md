@@ -45,7 +45,12 @@ cnlab 把这些问题单独拎出来，用最少的应用代码承载它们。**
 
 ## 快速开始
 
-前置：Go 1.25+、Docker（建议给 Docker 至少 8GB 内存）、`gh` CLI（可选，用于跑 CI）。
+前置：Go 1.25+、Docker、`gh` CLI（可选，用于跑 CI）。
+
+> **关于 Docker 内存**：本项目全部内容是在 Docker 只分配 **4GB** 内存的机器上跑通的
+> （这也是集群只起 1 控制面 + 1 工作节点的原因）。如果你想练 `podAntiAffinity`、
+> 拓扑分布这类需要多节点的话题，把 Docker 内存提到 8GB 以上，再把 `kind/cluster.yaml`
+> 里的 worker 加成两个。
 
 ```bash
 # 1. 装工具到项目内 bin/（不依赖 brew，版本写在脚本里）
@@ -62,7 +67,21 @@ make deploy-dev
 
 # 5. 打通一次请求
 make smoke
+
+# 6. 之后每次改完代码，重复第 3 步，并显式重启 Pod
+make image-push-local && make rollout-restart
 ```
+
+> **为什么第 6 步需要 `rollout-restart`？**（这是内循环最容易踩的一点）
+>
+> dev 用的 tag 是固定值 `:dev`，改代码不会改变 Deployment 里的任何字段：
+> 镜像地址没变、ConfigMap 内容没变（哈希也没变）→ **Pod 模板完全一致 →
+> `make deploy-dev` 是一次空操作**。新镜像安静地躺在本地仓库里，而 K8s
+> 没有任何理由去替换 Pod。所以推完镜像必须显式 `rollout restart`。
+>
+> 注意这和"改 ConfigMap 会自动触发滚动更新"**恰好相反**——后者靠的是
+> `configMapGenerator` 的哈希后缀改变了 Pod 模板。这两种行为的差别，
+> 是理解"什么会让 Deployment 滚动"的最好入口。
 
 想验证"滚动更新期间零中断"这个核心承诺：
 
@@ -152,7 +171,7 @@ cnlab/
 | `LOG_FORMAT` | `json` | `json` / `text` |
 | `DRAIN_DELAY` | `5s` | 收到 SIGTERM 后、关闭监听器前的等待时间 |
 | `SHUTDOWN_TIMEOUT` | `15s` | 等待在途请求结束的上限 |
-| `READY_DELAY` | `0s` | 人为延迟就绪。调到 20s 可以观察 startupProbe 的价值 |
+| `READY_DELAY` | `0s` | 人为延迟就绪，用来制造"慢启动"。注意它只影响 `/readyz`，单独特意调大不会导致重启——见[练习 1.1](docs/07-动手练习.md) |
 | `ENABLE_ADMIN` | `false` | 是否注册 `/api/v1/admin/shutdown`。生产必须保持 false |
 | `GREETING` | `hello` | 业务用的可配置值，用来演示 ConfigMap 变更触发滚动更新 |
 
@@ -221,6 +240,45 @@ make argo-install / argo-password / argo-ui / argo-bootstrap / argo-status
 3. **宿主代理被透传进 kind 节点** — 节点容器里的 `127.0.0.1` 不是你的 Mac，导致 containerd 拉本地镜像时报 `proxyconnect tcp: dial tcp 127.0.0.1:10801: connect: connection refused`，表现为 `ImagePullBackOff`。
 
 细节和完整现象见 [踩坑记录](docs/06-踩坑记录.md)。
+
+## 已经验证过的结果
+
+下面每一条都是在本机真实执行、看到实际输出的，不是"理论上可以"。全部可通过 `make` 目标复现。
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 代码格式 | `make fmt-check` | 通过（0.11s） |
+| 静态检查 | `make vet` | 通过 |
+| Lint | `make lint` | **0 issues**（golangci-lint v2.12.2） |
+| 单元测试 | `make test` | 通过；`-race` 连跑 5 次稳定 |
+| 覆盖率 | `make cover` | **77.8%** |
+| 镜像构建 | `make image` | 成功，**14.1 MB** |
+| 多架构构建 | `make image-multiarch` | linux/amd64 与 linux/arm64 均编译通过 |
+| 容器优雅下线 | `docker stop` | **0.94s** 完成（DRAIN_DELAY=800ms）；在途 600ms 请求返回 200 |
+| 清单渲染 | `make render-dev` | dev 5 / staging 5 / prod 6 个资源 |
+| 清单 schema | `kubeconform -strict` | **16 个资源全部 Valid，0 Invalid** |
+| 滚动更新零中断 | `make zero-downtime` | **60/60 请求成功，fail=0** |
+| Pod Security | 提交一个 root Pod | 被 `restricted` 策略**拒绝** |
+| CI 流水线 | GitHub Actions | 4 个 job 全绿（18s / 24s / 51s / 12s） |
+| GitOps 自动同步 | 推送到 `main` | CI 写入 `sha-f24b9a4` → ArgoCD 自动同步到集群 |
+| 漂移检测 | `kubectl scale --replicas=3` | ArgoCD **约 4 秒**自动纠回 1 副本 |
+
+规模：`main.go` 624 行 + `main_test.go` 378 行，**零第三方依赖**（`go.mod` 里没有 `require` 块）。
+
+其中 GitOps 闭环的三方一致性是最值得看的一条证据：
+
+```
+CI 写入期望状态的 tag       →  sha-f24b9a4
+ArgoCD 同步到的 revision     →  e1293b3
+集群里运行的镜像             →  ghcr.io/am-okalin/cnlab:sha-f24b9a4
+应用自报的 /api/v1/version   →  version = sha-f24b9a4
+                               commit  = f24b9a4e80edcb80af918e8ca06524333ae11ccf
+```
+
+注意两个字段的粒度不同：`version` 是 CI 计算的**短 sha**（`sha-${GITHUB_SHA::7}`），
+而 `commit` 是构建时注入的 `${{ github.sha }}`，即**完整 40 位 sha**。两者指向同一个提交。
+
+**镜像 tag ↔ git commit ↔ 运行时自报**三者对得上，才谈得上"线上跑的是哪份代码"可追溯。
 
 ## 已知边界
 

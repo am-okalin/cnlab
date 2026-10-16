@@ -1,4 +1,8 @@
-# staging 环境：同样自动同步，但镜像 tag 是 :staging。
+# staging 环境：同样自动同步，但镜像来自 GHCR，tag 由 CI 自动写入。
+#
+# 注意 staging 的 tag 不是固定的 `:staging`，而是每次 CI 构建产出的
+# 不可变 tag（如 `sha-f24b9a4`）。它写在 deploy/overlays/staging 里，
+# 由 CI 的 gitops job 自动提交 —— 这个文件本身不含任何镜像信息。
 #
 # 它和 dev 的差别只体现在 overlay 里，Application 这一层几乎一样。
 # 这个"几乎一样"本身就是重点：环境之间的差异应该收敛到少数几个

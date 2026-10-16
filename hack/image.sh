@@ -32,7 +32,7 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 case "$ACTION" in
   build)
-    log "构建 cnnlab:${VERSION} (linux/${CNLAB_HOST_ARCH})"
+    log "构建 cnlab:${VERSION} (linux/${CNLAB_HOST_ARCH})"
     docker buildx build \
       --platform "linux/${CNLAB_HOST_ARCH}" \
       "${COMMON_ARGS[@]}" \
